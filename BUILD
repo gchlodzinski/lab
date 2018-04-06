@@ -971,6 +971,8 @@ py_binary(
     data = [":deepmind_lab.so"],
     main = "python/random_agent.py",
     visibility = ["//python/tests:__subpackages__"],
+    default_python_version = "PY3",
+    srcs_version = "PY3",
 )
 
 LOAD_TEST_SCRIPTS = [

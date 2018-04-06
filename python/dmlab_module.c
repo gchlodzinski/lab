@@ -36,27 +36,6 @@
 #define ENV_STATUS_UNINITIALIZED -2
 #define ENV_STATUS_INITIALIZED -1
 
-
-// Glue code to make the code work with both Python 2.7 and Python 3.
-//
-#if PY_MAJOR_VERSION >= 3
-#  define PY_INIT_SIGNATURE(name) PyInit_ ## name
-#  define PY_RETURN_SUCCESS(x) return x
-#  define PY_RETURN_FAILURE    return NULL
-#  define PyInt_FromLong PyLong_FromLong
-#  define PyInt_AsLong PyLong_AsLong
-#  define PyInt_Check PyLong_Check
-#  define PyString_FromString PyBytes_FromString
-#  define PyString_FromStringAndSize PyBytes_FromStringAndSize
-#  define PyString_AsString PyBytes_AsString
-#  define PyString_Check PyBytes_Check
-#  define PyString_Type PyBytes_Type
-#else  // PY_MAJOR_VERSION >= 3
-#  define PY_INIT_SIGNATURE(name) init ## name
-#  define PY_RETURN_SUCCESS(x) return
-#  define PY_RETURN_FAILURE    return
-#endif  // PY_MAJOR_VERSION >= 3
-
 static char runfiles_path[4096];  // set in initdeepmind_lab() below
 
 typedef struct {
@@ -85,7 +64,7 @@ static void LabObject_dealloc(PyObject* pself) {
   env_close(self);
   free(self->env_c_api);
   free(self->observation_indices);
-  Py_TYPE(self)->tp_free(pself);
+  Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
 static PyObject* LabObject_new(PyTypeObject* type, PyObject* args,
@@ -189,8 +168,8 @@ static int Lab_init(PyObject* pself, PyObject* args, PyObject* kwds) {
     char *key, *value;
 
     while (PyDict_Next(config, &pos, &pykey, &pyvalue)) {
-      key = PyString_AsString(pykey);
-      value = PyString_AsString(pyvalue);
+      key = PyUnicode_AsUTF8(pykey);
+      value = PyUnicode_AsUTF8(pyvalue);
       if (key == NULL || value == NULL) {
         return -1;
       }
@@ -212,7 +191,7 @@ static int Lab_init(PyObject* pself, PyObject* args, PyObject* kwds) {
   char* observation_name;
   int api_observation_count = self->env_c_api->observation_count(self->context);
   for (int i = 0; i < self->observation_count; ++i) {
-    observation_name = PyString_AsString(PyList_GetItem(observations, i));
+    observation_name = PyUnicode_AsUTF8(PyList_GetItem(observations, i));
     if (observation_name == NULL) {
       return -1;
     }
@@ -253,12 +232,12 @@ static PyObject* Lab_reset(PyObject* pself, PyObject* args, PyObject* kwds) {
   if (seed_arg == NULL || seed_arg == Py_None) {
     seed = rand();
   } else {
-    if (!PyInt_Check(seed_arg)) {
+    if (!PyLong_Check(seed_arg)) {
       PyErr_Format(PyExc_ValueError, "'seed' must be int or None, was '%s'.",
                    Py_TYPE(seed_arg)->tp_name);
       return NULL;
     }
-    seed = PyInt_AsLong(seed_arg);
+    seed = PyLong_AsLong(seed_arg);
   }
 
   if (self->env_c_api->start(self->context, self->episode, seed) != 0) {
@@ -273,7 +252,7 @@ static PyObject* Lab_reset(PyObject* pself, PyObject* args, PyObject* kwds) {
 }
 
 static PyObject* Lab_num_steps(PyObject* self, PyObject* no_arg) {
-  return PyInt_FromLong(((LabObject*)self)->num_steps);
+  return PyLong_FromLong(((LabObject*)self)->num_steps);
 }
 
 // Helper function to determine if we're ready to step or give an observation.
@@ -370,7 +349,7 @@ static PyObject* Lab_observation_spec(PyObject* pself, PyObject* no_arg) {
   for (int idx = 0; idx < count; ++idx) {
     self->env_c_api->observation_spec(self->context, idx, &spec);
     if (spec.type == EnvCApi_ObservationString) {
-      type = (PyObject*)(&PyString_Type);
+      type = (PyObject*)(&PyUnicode_Type);
       shape = PyTuple_New(0);
       if (PyList_SetItem(result, idx,
                          Py_BuildValue("{s:s,s:N,s:O}", "name",
@@ -391,7 +370,7 @@ static PyObject* Lab_observation_spec(PyObject* pself, PyObject* no_arg) {
     type = (PyObject*)PyArray_DescrFromType(observation_type)->typeobj;
     shape = PyTuple_New(spec.dims);
     for (int j = 0; j < spec.dims; ++j) {
-      if (PyTuple_SetItem(shape, j, PyInt_FromLong(spec.shape[j])) != 0) {
+      if (PyTuple_SetItem(shape, j, PyLong_FromLong(spec.shape[j])) != 0) {
         PyErr_SetString(PyExc_RuntimeError, "Unable to populate tuple");
         return NULL;
       }
@@ -409,7 +388,7 @@ static PyObject* Lab_observation_spec(PyObject* pself, PyObject* no_arg) {
 }
 
 static PyObject* Lab_fps(PyObject* self, PyObject* no_arg) {
-  return PyInt_FromLong(
+  return PyLong_FromLong(
       ((LabObject*)self)->env_c_api->fps(((LabObject*)self)->context));
 }
 
@@ -442,7 +421,7 @@ static PyObject* Lab_action_spec(PyObject* pself, PyObject* no_arg) {
 
 static PyObject* make_observation(const EnvCApi_Observation* observation) {
   if (observation->spec.type == EnvCApi_ObservationString) {
-    PyObject* result = PyString_FromStringAndSize(observation->payload.string,
+    PyObject* result = PyUnicode_FromStringAndSize(observation->payload.string,
                                                   observation->spec.shape[0]);
     if (result == NULL) PyErr_NoMemory();
     return result;
@@ -551,7 +530,7 @@ static PyObject* Lab_events(PyObject* pself, PyObject* no_arg) {
     }
     PyObject* entry = PyTuple_New(2);
     PyTuple_SetItem(entry, 0,
-                    PyString_FromString(self->env_c_api->event_type_name(
+                    PyUnicode_FromString(self->env_c_api->event_type_name(
                         self->context, event.id)));
 
     PyObject* observation_list = PyList_New(event.observation_count);
@@ -680,43 +659,36 @@ static PyMethodDef module_methods[] = {
     {NULL, NULL, 0, NULL} /* sentinel */
 };
 
-#if PY_MAJOR_VERSION >= 3
-static PyModuleDef module_def = {
-    PyModuleDef_HEAD_INIT,
-    "deepmind_lab",             /* m_name */
-    "DeepMind Lab API module",  /* m_doc */
-    -1,                         /* m_size */
-    module_methods,             /* m_methods */
-    NULL,                       /* m_reload */
-    NULL,                       /* m_traverse */
-    NULL,                       /* m_clear */
-    NULL,                       /* m_free */
-};
-#endif  // PY_MAJOR_VERSION >= 3
-
-PyMODINIT_FUNC PY_INIT_SIGNATURE(deepmind_lab)(void) {
+PyMODINIT_FUNC PyInit_deepmind_lab(void) {
   PyObject* m;
 
-  if (PyType_Ready(&deepmind_lab_LabType) < 0) PY_RETURN_FAILURE;
+  if (PyType_Ready(&deepmind_lab_LabType) < 0) return;
 
-#if PY_MAJOR_VERSION >= 3
-  m = PyModule_Create(&module_def);
-#else  // PY_MAJOR_VERSION >= 3
-  m = Py_InitModule3("deepmind_lab", module_methods, "DeepMind Lab API module");
-#endif  // PY_MAJOR_VERSION >= 3
+  static struct PyModuleDef moduledef = {
+      PyModuleDef_HEAD_INIT,
+      "deepmind_lab",     /* m_name */
+      "DeepMind Lab API module",  /* m_doc */
+      -1,                  /* m_size */
+      module_methods,    /* m_methods */
+      NULL,                /* m_reload */
+      NULL,                /* m_traverse */
+      NULL,                /* m_clear */
+      NULL,                /* m_free */
+  };
 
+  m = PyModule_Create(&moduledef);
   Py_INCREF(&deepmind_lab_LabType);
   PyModule_AddObject(m, "Lab", (PyObject*)&deepmind_lab_LabType);
 
 #ifdef DEEPMIND_LAB_MODULE_RUNFILES_DIR
   PyObject *v = PyObject_GetAttrString(m, "__file__");
-  if (v && PyString_Check(v)) {
-    const char* file = PyString_AsString(v);
+  if (v && PyUnicode_Check(v)) {
+    const char* file = PyUnicode_AsUTF8(v);
     if (strlen(file) < sizeof(runfiles_path)) {
       strcpy(runfiles_path, file);
     } else {
       PyErr_SetString(PyExc_RuntimeError, "Runfiles directory name too long!");
-      PY_RETURN_FAILURE;
+      return;
     }
 
     char* last_slash = strrchr(runfiles_path, '/');
@@ -725,30 +697,20 @@ PyMODINIT_FUNC PY_INIT_SIGNATURE(deepmind_lab)(void) {
     } else {
       PyErr_SetString(PyExc_RuntimeError,
                       "Unable to determine runfiles directory!");
-      PY_RETURN_FAILURE;
+      return;
     }
   } else {
     strcpy(runfiles_path, ".");
   }
 #else
-#if PY_MAJOR_VERSION >= 3
-  PyObject* u = PyUnicode_FromWideChar(Py_GetProgramFullPath(), -1);
-  if (u == NULL) PY_RETURN_FAILURE;
-
-  PyObject* p = PyUnicode_EncodeFSDefault(u);
-  const char* s = PyBytes_AsString(p);
-  size_t n = PyBytes_Size(p);
-#else  // PY_MAJOR_VERSION >= 3
-  const char* s = Py_GetProgramFullPath();
-  size_t n = strlen(s);
-#endif  // PY_MAJOR_VERSION >= 3
   static const char kRunfiles[] = ".runfiles/org_deepmind_lab";
-  if (n + strlen(kRunfiles) < sizeof(runfiles_path)) {
-    strcpy(runfiles_path, s);
+  if (strlen(Py_GetProgramFullPath()) + strlen(kRunfiles) <
+      sizeof(runfiles_path)) {
+    strcpy(runfiles_path, Py_GetProgramFullPath());
     strcat(runfiles_path, kRunfiles);
   } else {
     PyErr_SetString(PyExc_RuntimeError, "Runfiles directory name too long!");
-    PY_RETURN_FAILURE;
+    return;
   }
 #endif
 
@@ -756,5 +718,5 @@ PyMODINIT_FUNC PY_INIT_SIGNATURE(deepmind_lab)(void) {
 
   import_array();
 
-  PY_RETURN_SUCCESS(m);
+  return m;
 }
